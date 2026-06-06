@@ -106,7 +106,7 @@ def read_captions_with_csv(file_path: Path) -> list:
         cap_col = [i for i, c in enumerate(header)
                    if 'comment' in c.lower() or 'caption' in c.lower()]
         if not cap_col:
-            raise ValueError("❌ Không tìm được cột caption trong CSV.")
+            raise ValueError("Không tìm được cột caption trong CSV.")
         cap_idx = cap_col[-1]
 
         for row in reader:
@@ -125,23 +125,23 @@ if __name__ == "__main__":
     # Thử load từ file thực nếu có
     captions = None
     if Path(CAPTIONS_FILE).exists():
-        print("\n📖 Đọc captions từ:", CAPTIONS_FILE)
+        print("\nĐọc captions từ:", CAPTIONS_FILE)
         if pd is not None:
             df = pd.read_csv(CAPTIONS_FILE, sep="|")
             df.columns = df.columns.str.strip()
 
-            print("📋 Các cột:", list(df.columns))
+            print("Các cột:", list(df.columns))
 
             cap_col = [c for c in df.columns
                        if "comment" in c.lower() or "caption" in c.lower()]
             if not cap_col:
-                raise ValueError("❌ Không tìm được cột caption!")
+                raise ValueError("Không tìm được cột caption!")
             cap_col = cap_col[-1]
             print(f"✓ Dùng cột: '{cap_col}'")
 
             captions = df[cap_col].dropna().astype(str).tolist()
         else:
-            print("⚠️ pandas không có, dùng csv reader thay thế")
+            print("pandas không có, dùng csv reader thay thế")
             captions = read_captions_with_csv(Path(CAPTIONS_FILE))
 
         print(f"✓ Số lượng captions: {len(captions):,}")
@@ -154,7 +154,7 @@ if __name__ == "__main__":
     vocab = Vocabulary(freq_threshold=FREQ_THRESHOLD)
     vocab.build(captions)
 
-    # Lưu vocab dạng pickle (object có thể tái sử dụng)
+    # Lưu vocab dạng pickle
     with open(VOCAB_PKL, "wb") as f:
         pickle.dump(vocab, f)
     print(f"\n✓ Lưu vocab object → {VOCAB_PKL}")
@@ -165,10 +165,10 @@ if __name__ == "__main__":
     print(f"✓ Lưu word2idx → {VOCAB_JSON}")
 
     # Demo
-    print(f"\n📊 Thống kê:")
+    print(f"\nThống kê:")
     print(f"   Total tokens: {len(vocab):,}")
     print(f"   Freq threshold: {vocab.freq_threshold}")
-    print(f"\n🎯 Demo encode/decode:")
+    print(f"\nDemo encode/decode:")
     sample_caption = "a dog is running in the park"
     encoded = vocab.encode(sample_caption)
     decoded = vocab.decode(encoded)
