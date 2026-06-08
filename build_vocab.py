@@ -1,114 +1,56 @@
-import pickle
-import json
+import argparse
 import csv
-import re
-from collections import Counter
+import json
+import pickle
 from pathlib import Path
 
 try:
     import pandas as pd
+    _pd_available = True
 except ModuleNotFoundError:
     pd = None
+    _pd_available = False
 
-try:
-    import nltk
-    _nltk_available = True
-    nltk.download('punkt_tab', quiet=True)
-    nltk.download('punkt', quiet=True)
-except ModuleNotFoundError:
-    nltk = None
-    _nltk_available = False
+from vocabulary import Vocabulary
 
 
-def tokenize(text: str) -> list[str]:
-    text = text.lower()
-    if _nltk_available:
-        return nltk.word_tokenize(text)
-    return re.findall(r"\w+", text)
-
-class Vocabulary:
-    """
-    Vocab xây từ train captions.
-    Special tokens: <PAD>=0, <SOS>=1, <EOS>=2, <UNK>=3
-    """
-    PAD, SOS, EOS, UNK = 0, 1, 2, 3
-
-    def __init__(self, freq_threshold: int = 5):
-        self.freq_threshold = freq_threshold
-        self.word2idx = {'<PAD>': 0, '<SOS>': 1, '<EOS>': 2, '<UNK>': 3}
-        self.idx2word = {v: k for k, v in self.word2idx.items()}
-
-    def build(self, captions: list):
-        """Build vocab từ captions list"""
-        counter = Counter()
-        for cap in captions:
-            counter.update(tokenize(cap))
-
-        idx = len(self.word2idx)
-        for word, freq in counter.items():
-            if freq >= self.freq_threshold:
-                self.word2idx[word] = idx
-                self.idx2word[idx] = word
-                idx += 1
-        print(f'✓ Vocab size: {len(self.word2idx):,} từ (freq_threshold={self.freq_threshold})')
-
-    def encode(self, caption: str) -> list:
-        """Caption → [SOS] + token indices + [EOS]"""
-        tokens = tokenize(caption)
-        return ([self.SOS]
-                + [self.word2idx.get(t, self.UNK) for t in tokens]
-                + [self.EOS])
-
-    def decode(self, indices: list) -> str:
-        """Indices → caption (remove special tokens)"""
-        words = []
-        for i in indices:
-            if i == self.EOS:
-                break
-            if i not in (self.PAD, self.SOS):
-                words.append(self.idx2word.get(i, '<UNK>'))
-        return ' '.join(words)
-
-    def __len__(self):
-        return len(self.word2idx)
+# Đường dẫn mặc định
+DEFAULT_CAPTIONS = (
+    "/home/codespace/.cache/kagglehub/datasets/"
+    "hsankesara/flickr-image-dataset/versions/1/"
+    "flickr30k_images/results.csv"
+)
+DEFAULT_FREQ      = 5
+DEFAULT_OUTPUT    = Path(".")
+VOCAB_PKL_NAME    = "vocab.pkl"
+VOCAB_JSON_NAME   = "vocab.json"
 
 
-CAPTIONS_FILE = "/home/codespace/.cache/kagglehub/datasets/hsankesara/flickr-image-dataset/versions/1/flickr30k_images/results.csv"
-FREQ_THRESHOLD = 5  # Unified với CNN+LSTM
-OUTPUT_DIR = Path(".")
-VOCAB_PKL = OUTPUT_DIR / "vocab.pkl"
-VOCAB_JSON = OUTPUT_DIR / "vocab.json"
-
-# Demo captions (dùng khi không có dataset)
-DEMO_CAPTIONS = [
-    "a dog is running in the park",
-    "a cat is sitting on the couch",
-    "a boy is playing with a ball",
-    "a girl is reading a book",
-    "a dog and cat are playing together",
-    "a man is cooking in the kitchen",
-    "a woman is walking in the park",
-    "children are playing in the park",
-    "a person is riding a bicycle",
-    "a dog is sleeping on the bed",
-] * 50  # Repeat để có đủ tần suất
+# Đọc captions
+def _read_with_pandas(file_path: Path) -> list[str]:
+    df = pd.read_csv(file_path, sep="|")
+    df.columns = df.columns.str.strip()
+    cap_col = [c for c in df.columns if "comment" in c.lower() or "caption" in c.lower()]
+    if not cap_col:
+        raise ValueError("Không tìm được cột caption trong CSV.")
+    col = cap_col[-1]
+    print(f"Dùng cột: '{col}'")
+    return df[col].dropna().astype(str).str.strip().tolist()
 
 
-def read_captions_with_csv(file_path: Path) -> list:
+def _read_with_csv(file_path: Path) -> list[str]:
     captions = []
-    with file_path.open('r', encoding='utf-8', errors='ignore') as f:
-        reader = csv.reader(f, delimiter='|')
+    with file_path.open("r", encoding="utf-8", errors="ignore") as f:
+        reader = csv.reader(f, delimiter="|")
         header = next(reader, None)
         if header is None:
             return captions
-
-        header = [col.strip() for col in header]
-        cap_col = [i for i, c in enumerate(header)
-                   if 'comment' in c.lower() or 'caption' in c.lower()]
-        if not cap_col:
+        header = [c.strip() for c in header]
+        cap_idx_list = [i for i, c in enumerate(header)
+                        if "comment" in c.lower() or "caption" in c.lower()]
+        if not cap_idx_list:
             raise ValueError("Không tìm được cột caption trong CSV.")
-        cap_idx = cap_col[-1]
-
+        cap_idx = cap_idx_list[-1]
         for row in reader:
             if cap_idx < len(row):
                 caption = row[cap_idx].strip()
@@ -117,61 +59,114 @@ def read_captions_with_csv(file_path: Path) -> list:
     return captions
 
 
-if __name__ == "__main__":
+def load_captions(file_path: Path) -> list[str]:
+    if _pd_available:
+        return _read_with_pandas(file_path)
+    print("pandas không khả dụng, dùng csv reader thay thế.")
+    return _read_with_csv(file_path)
+
+
+# Build & lưu vocab 
+def build_and_save(
+    captions: list[str],
+    freq_threshold: int,
+    output_dir: Path,
+) -> Vocabulary:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    vocab = Vocabulary(freq_threshold=freq_threshold)
+    vocab.build(captions)
+
+    pkl_path  = output_dir / VOCAB_PKL_NAME
+    json_path = output_dir / VOCAB_JSON_NAME
+
+    # Lưu dạng pickle
+    with open(pkl_path, "wb") as f:
+        pickle.dump(vocab, f)
+    print(f"Lưu vocab object → {pkl_path}")
+
+    # Lưu dạng JSON
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(vocab.word2idx, f, ensure_ascii=False, indent=2)
+    print(f"Lưu word2idx    → {json_path}")
+
+    return vocab
+
+
+# Load vocab từ file
+def load_vocab(pkl_path: Path) -> Vocabulary:
+    """Load Vocabulary đã được lưu từ file pickle."""
+    with open(pkl_path, "rb") as f:
+        vocab = pickle.load(f)
+    print(f"Loaded vocab: {len(vocab):,} từ  ←  {pkl_path}")
+    return vocab
+
+
+def load_or_build_vocab(
+    captions: list[str],
+    freq_threshold: int = DEFAULT_FREQ,
+    output_dir: Path = DEFAULT_OUTPUT,
+) -> Vocabulary:
+    pkl_path = output_dir / VOCAB_PKL_NAME
+    if pkl_path.exists():
+        print("Load vocab từ file pickle...")
+        return load_vocab(pkl_path)
+    print("Xây dựng vocab từ captions...")
+    return build_and_save(captions, freq_threshold, output_dir)
+
+
+# CLI
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build Vocabulary từ Flickr30k captions."
+    )
+    parser.add_argument(
+        "--captions", type=str, default=DEFAULT_CAPTIONS,
+        help="Đường dẫn tới file results.csv của Flickr30k.",
+    )
+    parser.add_argument(
+        "--freq", type=int, default=DEFAULT_FREQ,
+        help=f"Ngưỡng tần suất tối thiểu (mặc định: {DEFAULT_FREQ}).",
+    )
+    parser.add_argument(
+        "--out", type=str, default=str(DEFAULT_OUTPUT),
+        help="Thư mục xuất vocab.pkl và vocab.json.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    captions_path = Path(args.captions)
+    output_dir    = Path(args.out)
+
     print("=" * 60)
     print("BUILDING VOCABULARY")
     print("=" * 60)
-    
-    # Thử load từ file thực nếu có
-    captions = None
-    if Path(CAPTIONS_FILE).exists():
-        print("\nĐọc captions từ:", CAPTIONS_FILE)
-        if pd is not None:
-            df = pd.read_csv(CAPTIONS_FILE, sep="|")
-            df.columns = df.columns.str.strip()
 
-            print("Các cột:", list(df.columns))
+    if not captions_path.exists():
+        raise FileNotFoundError(f"Không tìm thấy file captions: {captions_path}")
 
-            cap_col = [c for c in df.columns
-                       if "comment" in c.lower() or "caption" in c.lower()]
-            if not cap_col:
-                raise ValueError("Không tìm được cột caption!")
-            cap_col = cap_col[-1]
-            print(f"✓ Dùng cột: '{cap_col}'")
+    print(f"\nĐọc captions từ: {captions_path}")
+    captions = load_captions(captions_path)
+    print(f"Số lượng captions: {len(captions):,}")
 
-            captions = df[cap_col].dropna().astype(str).tolist()
-        else:
-            print("pandas không có, dùng csv reader thay thế")
-            captions = read_captions_with_csv(Path(CAPTIONS_FILE))
+    vocab = build_and_save(captions, args.freq, output_dir)
 
-        print(f"✓ Số lượng captions: {len(captions):,}")
-    else:
-        print("\n📖 File dataset không tìm thấy, dùng demo captions")
-        captions = DEMO_CAPTIONS
-        print(f"✓ Demo captions: {len(captions):,}")
-
-    # Build vocab
-    vocab = Vocabulary(freq_threshold=FREQ_THRESHOLD)
-    vocab.build(captions)
-
-    # Lưu vocab dạng pickle
-    with open(VOCAB_PKL, "wb") as f:
-        pickle.dump(vocab, f)
-    print(f"\n✓ Lưu vocab object → {VOCAB_PKL}")
-
-    # Lưu vocab dạng JSON (readable + compatible)
-    with open(VOCAB_JSON, "w") as f:
-        json.dump(vocab.word2idx, f, indent=2)
-    print(f"✓ Lưu word2idx → {VOCAB_JSON}")
-
-    # Demo
+    # Thống kê
     print(f"\nThống kê:")
-    print(f"   Total tokens: {len(vocab):,}")
+    print(f"   Total tokens  : {len(vocab):,}")
     print(f"   Freq threshold: {vocab.freq_threshold}")
-    print(f"\nDemo encode/decode:")
-    sample_caption = "a dog is running in the park"
-    encoded = vocab.encode(sample_caption)
+
+    # Demo encode / decode
+    sample = "a dog is running in the park"
+    encoded = vocab.encode(sample)
     decoded = vocab.decode(encoded)
-    print(f"   Input:  '{sample_caption}'")
+    print(f"\nDemo encode/decode:")
+    print(f"   Input  : '{sample}'")
     print(f"   Encoded: {encoded}")
     print(f"   Decoded: '{decoded}'")
+
+
+if __name__ == "__main__":
+    main()
